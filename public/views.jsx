@@ -613,11 +613,11 @@ function SecretStat({ label, value, footnote, accent }) {
 // SCAN MANAGEMENT view
 // ─────────────────────────────────────────────────────────────
 
-function ScansView({ jobs }) {
+function ScansView({ jobs, tools }) {
   return (
     <div className="view-inner">
       <div className="stat-row" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-        <StatPlain label="Repos in scope"  value="47" foot="36 GitHub · 11 local WSL" />
+        <StatPlain label="Repos in scope"  value={String((window.SVData.REPOS || []).length)} foot={`${(window.SVData.REPOS || []).filter(r => r.source === 'github').length} GitHub · ${(window.SVData.REPOS || []).filter(r => r.source === 'local').length} local WSL`} />
         <StatPlain label="Scans last 24h"  value="142" foot="138 push · 47 daily · 6 on-demand" />
         <StatPlain label="Median scan time" value="2.4" unit="s" foot="fast scanners · npm/pip/cargo audit" />
         <StatPlain label="Deep scan time"   value="38" unit="s" foot="OSV + Grype + Syft (p50)" />
@@ -684,12 +684,16 @@ function ScansView({ jobs }) {
           <div className="card" style={{ marginTop: 14 }}>
             <h3 style={{ marginBottom: 4 }}>Tool status</h3>
             <p className="lede">scanner versions & DB freshness</p>
-            <ToolRow name="osv-scanner" version="1.9.0" db="OSV.dev synced 14m ago" ok />
-            <ToolRow name="grype"       version="0.79.1" db="vuln DB 2h ago" ok />
-            <ToolRow name="syft"        version="1.4.0"  db="—" ok />
-            <ToolRow name="trufflehog"  version="3.78.0" db="800+ detectors" ok />
-            <ToolRow name="gitleaks"    version="8.18.4" db="150+ rules" ok />
-            <ToolRow name="trivy"       version="not installed" db="phase 4" warn last />
+            {(tools && tools.length > 0 ? tools : [
+              { name: 'npm', version: '—', installed: false },
+              { name: 'grype', version: '—', installed: false },
+              { name: 'syft', version: '—', installed: false },
+              { name: 'trufflehog', version: '—', installed: false },
+              { name: 'gitleaks', version: '—', installed: false },
+              { name: 'trivy', version: '—', installed: false },
+            ]).map((t, i, arr) => (
+              <ToolRow key={t.name} name={t.name} version={t.version} db={t.installed ? 'ready' : 'not available'} ok={t.installed} warn={!t.installed} last={i === arr.length - 1} />
+            ))}
           </div>
         </div>
       </div>

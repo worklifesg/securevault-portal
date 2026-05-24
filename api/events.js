@@ -8,7 +8,7 @@ const eventLog = [];
 function fetchGitHubActivity() {
   try {
     const raw = execSync(
-      'gh api events --jq \'.[0:20] | .[] | {type: .type, repo: .repo.name, actor: .actor.login, created_at: .created_at, payload_action: .payload.action}\' 2>/dev/null || echo "[]"',
+      'gh api users/worklifesg/events --jq \'.[0:20] | .[] | {type: .type, repo: .repo.name, actor: .actor.login, created_at: .created_at, payload_action: .payload.action}\' 2>/dev/null || echo "[]"',
       { encoding: 'utf-8', timeout: 15000 }
     );
 
