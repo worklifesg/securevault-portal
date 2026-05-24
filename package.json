@@ -1,0 +1,19 @@
+{
+  "name": "securevault-portal",
+  "version": "1.0.0",
+  "description": "SecureVault — Vulnerability Portal & Remediation System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": ["security", "vulnerability", "scanning"],
+  "author": "Shraman Gupta",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "octokit": "^5.0.5"
+  }
+}
