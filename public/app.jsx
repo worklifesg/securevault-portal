@@ -6,6 +6,7 @@ const { Sidebar, Header } = window.SVChrome;
 const { Overview } = window.SVOverview;
 const { Vulnerabilities, BatchPRModal } = window.SVVulns;
 const { Posture, Remediation, DriftStream, SecretsView, ScansView } = window.SVViews;
+const { Settings } = window.SVSettings;
 const { useTweaks, TweaksPanel, TweakSection, TweakColor, TweakRadio } = window;
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
@@ -75,8 +76,9 @@ function App() {
 
   const onRemediate = (findings) => setModalFindings(findings);
   const confirmRemediation = () => {
+    const repoCount = new Set(modalFindings.map(f => f.repo)).size;
     setModalFindings(null);
-    setToast(`Opened ${new Set(modalFindings.map(f => f.repoId)).size} PR${new Set(modalFindings.map(f => f.repoId)).size === 1 ? '' : 's'} · view in Remediation board`);
+    setToast(`Remediation plan ready for ${repoCount} repo${repoCount === 1 ? '' : 's'} — review the version bumps and apply in your repo`);
     setTimeout(() => setToast(null), 4500);
   };
 
@@ -103,18 +105,15 @@ function App() {
           {view === 'posture' && (
             <Posture
               repos={liveData.REPOS}
-              drift={liveData.DRIFT_TIMELINE}
               onJump={setView}
             />
           )}
           {view === 'remediation' && (
-            <Remediation
-              findings={liveData.FINDINGS}
-              regression={liveData.REGRESSION}
-            />
+            <Remediation findings={liveData.FINDINGS} />
           )}
           {view === 'drift' && <DriftStream events={events} />}
           {view === 'scans' && <ScansView jobs={liveData.SCAN_JOBS} tools={liveData.TOOLS} />}
+          {view === 'settings' && <Settings />}
         </div>
       </div>
 

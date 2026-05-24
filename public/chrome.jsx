@@ -4,15 +4,22 @@ const { Icon } = window.SVUI;
 
 const NAV = [
   { id: 'overview',  label: 'Overview',           icon: Icon.Gauge,    section: 'SECURITY' },
-  { id: 'vulns',     label: 'Vulnerabilities',    icon: Icon.Bug,      count: 47,    section: 'SECURITY' },
-  { id: 'secrets',   label: 'Secrets & Exposure', icon: Icon.Key,      count: 3, crit: true, section: 'SECURITY' },
+  { id: 'vulns',     label: 'Vulnerabilities',    icon: Icon.Bug,      section: 'SECURITY' },
+  { id: 'secrets',   label: 'Secrets & Exposure', icon: Icon.Key,      crit: true, section: 'SECURITY' },
   { id: 'posture',   label: 'Repository Posture', icon: Icon.Shield,   section: 'POSTURE' },
-  { id: 'remediation', label: 'Remediation',      icon: Icon.GitPR,    count: 6,     section: 'POSTURE' },
+  { id: 'remediation', label: 'Remediation',      icon: Icon.GitPR,    section: 'POSTURE' },
   { id: 'drift',     label: 'Drift & Events',     icon: Icon.Activity, section: 'POSTURE' },
   { id: 'scans',     label: 'Scan Management',    icon: Icon.Refresh,  section: 'OPS' },
 ];
 
 function Sidebar({ view, setView }) {
+  const data = window.SVData || {};
+  const findings = data.FINDINGS || [];
+  const counts = {
+    vulns: findings.length,
+    secrets: (data.SECRETS || []).length,
+    remediation: findings.filter(f => f.status === 'open').length,
+  };
   const grouped = NAV.reduce((acc, n) => {
     (acc[n.section] = acc[n.section] || []).push(n);
     return acc;
@@ -44,8 +51,8 @@ function Sidebar({ view, setView }) {
               >
                 <Ico />
                 <span>{item.label}</span>
-                {item.count != null && (
-                  <span className={`sb-count ${item.crit ? 'crit' : ''}`}>{item.count}</span>
+                {counts[item.id] > 0 && (
+                  <span className={`sb-count ${item.crit ? 'crit' : ''}`}>{counts[item.id]}</span>
                 )}
               </div>
             );
@@ -54,18 +61,12 @@ function Sidebar({ view, setView }) {
       ))}
 
       <div className="sb-section" style={{ marginTop: 'auto' }}>SYSTEM</div>
-      <div className="sb-item">
+      <div className={`sb-item ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}>
         <Icon.Settings />
         <span>Settings</span>
       </div>
 
-      <div className="sb-foot">
-        <div className="sb-avatar">SG</div>
-        <div className="sb-who">
-          Shraman Gupta
-          <small>Solo workspace · {(window.SVData.REPOS || []).length || '…'} repos</small>
-        </div>
-      </div>
+      <UserFooter />
     </aside>
   );
 }
@@ -78,6 +79,7 @@ const TITLES = {
   remediation: { h: 'Remediation',           crumb: '/ open patches & rollback' },
   drift:       { h: 'Drift & Events',        crumb: '/ live stream' },
   scans:       { h: 'Scan Management',       crumb: '/ jobs & schedules' },
+  settings:    { h: 'Settings',              crumb: '/ connection & scanners' },
 };
 
 function Header({ view, scanning, onScan }) {
@@ -100,14 +102,35 @@ function Header({ view, scanning, onScan }) {
       <div className={`hdr-status ${scanning ? 'scanning' : ''}`}>
         <span className="dot" />
         {scanning
-          ? <span>Daily scan · 23 / 47 repos</span>
-          : <span>All scanners healthy · last 02:00 UTC</span>}
+          ? <span>Loading workspace…</span>
+          : <span>{(window.SVData.REPOS || []).length} repos indexed</span>}
       </div>
 
-      <button className="btn btn-primary" onClick={onScan}>
-        <Icon.Play size={13} />
-        Run scan now
+      <button className="btn btn-primary" onClick={() => window.SVDataLoader && window.SVDataLoader.refreshAll()}>
+        <Icon.Refresh size={13} />
+        Refresh
       </button>
+    </div>
+  );
+}
+
+function UserFooter() {
+  const [user, setUser] = React.useState(null);
+  React.useEffect(() => {
+    fetch('/api/config')
+      .then(r => r.json())
+      .then(d => setUser(d.github_user))
+      .catch(() => {});
+  }, []);
+  const initials = user ? user.slice(0, 2).toUpperCase() : '??';
+  const repoCount = (window.SVData.REPOS || []).length;
+  return (
+    <div className="sb-foot">
+      <div className="sb-avatar">{initials}</div>
+      <div className="sb-who">
+        {user || 'Not configured'}
+        <small>Solo workspace · {repoCount || '…'} repos</small>
+      </div>
     </div>
   );
 }

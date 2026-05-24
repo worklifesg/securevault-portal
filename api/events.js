@@ -1,15 +1,18 @@
 const { Router } = require('express');
 const { execSync } = require('child_process');
+const { getAuthStatus, getGhEnv } = require('../lib/config');
 
 const router = Router();
 
 const eventLog = [];
 
 function fetchGitHubActivity() {
+  const ghUser = getAuthStatus().effectiveUser;
+  if (!ghUser) return [];
   try {
     const raw = execSync(
-      'gh api users/worklifesg/events --jq \'.[0:20] | .[] | {type: .type, repo: .repo.name, actor: .actor.login, created_at: .created_at, payload_action: .payload.action}\' 2>/dev/null || echo "[]"',
-      { encoding: 'utf-8', timeout: 15000 }
+      `gh api users/${ghUser}/events --jq '.[0:20] | .[] | {type: .type, repo: .repo.name, actor: .actor.login, created_at: .created_at, payload_action: .payload.action}' 2>/dev/null || echo "[]"`,
+      { encoding: 'utf-8', timeout: 15000, env: getGhEnv() }
     );
 
     if (!raw.trim() || raw.trim() === '[]') return [];

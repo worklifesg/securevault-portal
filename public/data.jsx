@@ -16,13 +16,14 @@ const SVDataLoader = {
         this._cache.REPOS = data.repos.map((r, i) => ({
           id: r.id || `r${i}`,
           name: r.name,
+          path: r.path || null,
           visibility: r.visibility,
           lang: r.lang,
-          risk: r.risk || Math.floor(Math.random() * 40 + 10),
+          risk: r.risk || 0,
           findings: r.findings || 0,
           secrets: r.secrets || 0,
           drift: r.drift || 0,
-          lastScan: r.lastScan || 'pending',
+          lastScan: r.lastScan || 'never',
           source: r.source,
           branch: r.branch || 'main',
           description: r.description || '',
@@ -56,17 +57,21 @@ const SVDataLoader = {
 
   async fetchScanResults() {
     try {
-      const res = await fetch('/api/scan/results');
-      const data = await res.json();
-      if (Array.isArray(data)) {
+      const [results, statusResp] = await Promise.all([
+        fetch('/api/scan/results').then(r => r.json()).catch(() => []),
+        fetch('/api/remediation/status').then(r => r.json()).catch(() => ({ statuses: {} })),
+      ]);
+      const statuses = (statusResp && statusResp.statuses) || {};
+      this._cache.REM_STATUS = statuses;
+      if (Array.isArray(results)) {
         const allFindings = [];
         const allSecrets = [];
-        data.forEach(scan => {
+        results.forEach(scan => {
           if (scan.findings) allFindings.push(...scan.findings);
           if (scan.secrets) allSecrets.push(...scan.secrets);
         });
         if (allFindings.length > 0) {
-          this._cache.FINDINGS = allFindings.map((f, i) => normalizeFinding(f, i));
+          this._cache.FINDINGS = allFindings.map((f, i) => applyStatus(normalizeFinding(f, i), statuses));
           this._notify();
         }
         if (allSecrets.length > 0) {
@@ -75,6 +80,48 @@ const SVDataLoader = {
         }
       }
     } catch (e) { console.warn('SVData: scan results fetch failed', e); }
+  },
+
+  // Manually set a finding's remediation status, then refresh.
+  async setFindingStatus(finding, status, note) {
+    try {
+      const res = await fetch('/api/remediation/status', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...finding.keyParts, status, note: note || '' }),
+      });
+      const out = await res.json();
+      await this.fetchScanResults();
+      return out;
+    } catch (e) {
+      console.warn('SVData: set status failed', e);
+      return { error: e.message };
+    }
+  },
+
+  // Clear a finding's override (back to "open"), then refresh.
+  async resetFindingStatus(finding) {
+    try {
+      await fetch('/api/remediation/status', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...finding.keyParts }),
+      });
+      await this.fetchScanResults();
+    } catch (e) { console.warn('SVData: reset status failed', e); }
+  },
+
+  // Scan open GitHub PRs and auto-flip matching findings to pr_open.
+  async syncPRStatus() {
+    try {
+      const res = await fetch('/api/remediation/sync', { method: 'POST' });
+      const out = await res.json();
+      await this.fetchScanResults();
+      return out;
+    } catch (e) {
+      console.warn('SVData: PR sync failed', e);
+      return { error: e.message };
+    }
   },
 
   async triggerScan(repoFullName) {
@@ -121,6 +168,13 @@ const SVDataLoader = {
     } catch {}
   },
 
+  refreshAll() {
+    this.fetchRepos();
+    this.fetchEvents();
+    this.fetchTools();
+    this.fetchScanResults();
+  },
+
   getData() {
     return {
       REPOS: this._cache.REPOS || INITIAL_REPOS,
@@ -135,27 +189,51 @@ const SVDataLoader = {
   },
 };
 
+const SEV_NORM = { critical: 'critical', high: 'high', moderate: 'medium', medium: 'medium', low: 'low', info: 'low' };
+
 function normalizeFinding(f, i) {
+  const sev = SEV_NORM[(f.severity || '').toLowerCase()] || 'medium';
   const sevMap = { critical: 9.5, high: 7.5, medium: 5.0, low: 2.5 };
+  // Stable key parts (raw fields) — must mirror lib/remediation.findingKey on the backend.
+  const keyParts = { repo: f.repo || '', pkg: f.pkg || '', cve: f.cve || '' };
   return {
     id: f.id || `f${i + 1}`,
-    severity: f.severity || 'medium',
+    severity: sev,
     cve: f.cve || f.url || `VULN-${i}`,
     pkg: f.pkg || 'unknown',
     installed: f.installed || 'unknown',
-    fixed: f.fixed || f.fixAvailable ? 'available' : 'none',
+    fixed: f.fixed || (f.fixAvailable ? 'available' : 'none'),
     repo: f.repo || '—',
     repoId: f.repoId || `r${i}`,
     source: f.source || 'github',
     eco: detectEcosystem(f.pkg || ''),
     scanner: f.scanner || 'osv-scanner',
-    cvss: f.cvss || sevMap[f.severity] || 5.0,
+    cvss: f.cvss || sevMap[sev] || 5.0,
     status: 'open',
+    statusSource: null,
+    note: '',
+    pr: null,
+    prUrl: null,
+    keyParts,
+    remKey: `${keyParts.repo}::${keyParts.pkg}::${keyParts.cve}`,
     seen: 'just now',
     sla: f.severity === 'critical' ? '24h' : f.severity === 'high' ? '72h' : '7d',
     title: f.title || `Vulnerability in ${f.pkg}`,
     cwe: f.cwe || [],
   };
+}
+
+// Overlay a persisted status (manual or PR-derived) onto a normalized finding.
+function applyStatus(nf, statuses) {
+  const ov = statuses && statuses[nf.remKey];
+  if (ov) {
+    nf.status = ov.status || nf.status;
+    nf.note = ov.note || '';
+    nf.pr = ov.pr || null;
+    nf.prUrl = ov.prUrl || null;
+    nf.statusSource = ov.source || 'manual';
+  }
+  return nf;
 }
 
 function normalizeSecret(s, i) {

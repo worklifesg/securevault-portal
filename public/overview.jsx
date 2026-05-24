@@ -1,6 +1,6 @@
 // Overview / Home view. Exposes window.SVOverview.
 
-const { Icon, SevPill, RiskGauge, SeverityDonut, Sparkline, SourceBadge } = window.SVUI;
+const { Icon, SevPill, RiskGauge, SeverityDonut, SourceBadge } = window.SVUI;
 
 function Overview({ events, regression, onJump }) {
   const REPOS = window.SVData.REPOS || [];
@@ -13,6 +13,7 @@ function Overview({ events, regression, onJump }) {
   const totalFindings = FINDINGS.length;
   const secretCount = (window.SVData.SECRETS || []).filter(s => s.status === 'active').length;
   const driftRepos = REPOS.filter(r => r.drift > 0).length;
+  const scannedCount = REPOS.filter(r => r.lastScan && r.lastScan !== 'never').length;
   const riskScore = REPOS.length > 0 ? Math.round(REPOS.reduce((s, r) => s + r.risk, 0) / REPOS.length) : 0;
 
   const donutData = [
@@ -92,7 +93,7 @@ function Overview({ events, regression, onJump }) {
                   <span className="sw" style={{ background: `var(--${d.k === 'critical' ? 'crit' : d.k === 'medium' ? 'med' : d.k})` }} />
                   <span>{d.label}</span>
                   <span className="num">{d.v}</span>
-                  <span className="pct">{Math.round((d.v/donutTotal)*100)}%</span>
+                  <span className="pct">{donutTotal > 0 ? Math.round((d.v/donutTotal)*100) : 0}%</span>
                 </div>
               ))}
             </div>
@@ -108,8 +109,11 @@ function Overview({ events, regression, onJump }) {
               SSE
             </span>
           </div>
-          <p className="lede" style={{ padding: '0 18px 6px', margin: 0 }}>Real-time events · last 6 min</p>
+          <p className="lede" style={{ padding: '0 18px 6px', margin: 0 }}>Real-time GitHub events</p>
           <div className="feed" style={{ padding: '4px 18px 14px', overflow: 'hidden' }}>
+            {events.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--muted)', padding: '8px 0' }}>No recent activity.</div>
+            )}
             {events.slice(0, 6).map((e, i) => (
               <FeedItem key={`${e.ts}-${i}`} event={e} />
             ))}
@@ -144,10 +148,9 @@ function Overview({ events, regression, onJump }) {
                     <span className={`vis ${r.visibility === 'public' ? 'pub' : ''}`}>{r.visibility}</span>
                   </div>
                   <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4 }}>
-                    {r.findings} findings · {r.secrets} secrets · {r.drift} drift · last scan {r.lastScan} ago
+                    {r.findings} findings · {r.secrets} secrets · {r.lastScan === 'never' ? 'never scanned' : `last scan ${r.lastScan} ago`}
                   </div>
                 </div>
-                <Sparkline values={genSpark(r.risk)} color={r.risk >= 75 ? 'var(--crit)' : r.risk >= 50 ? 'var(--high)' : 'var(--muted-2)'} />
                 <div className={`score ${r.risk >= 75 ? 'crit' : r.risk >= 50 ? 'high' : r.risk >= 25 ? 'med' : ''}`}>
                   {r.risk}
                 </div>
@@ -159,25 +162,26 @@ function Overview({ events, regression, onJump }) {
         <div className="card" style={{ padding: 0 }}>
           <div style={{ padding: '16px 18px 8px' }}>
             <h3 style={{ marginBottom: 2 }}>Scan coverage</h3>
-            <p className="lede" style={{ margin: 0 }}>Triggers in the last 24 hours · all sources</p>
+            <p className="lede" style={{ margin: 0 }}>Indexed sources and scan progress</p>
           </div>
           <div style={{ padding: '4px 18px 18px' }}>
             <CoverageRow icon={<Icon.Branch size={14} />}
-                         label="Push-triggered scans"
-                         desc="every push to any branch · &lt; 30s feedback"
-                         num="142" />
-            <CoverageRow icon={<Icon.Clock size={14} />}
-                         label="Daily scheduled (02:00 UTC)"
-                         desc="47 / 47 repos · full OSV + Grype + Trufflehog (weekly)"
-                         num="47" pct={100} />
+                         label="GitHub repositories"
+                         desc="indexed via gh CLI or token"
+                         num={String(REPOS.filter(r => r.source === 'github').length)} />
             <CoverageRow icon={<Icon.Folder size={14} />}
-                         label="WSL local agent"
-                         desc="11 projects under ~/projects + ~/code · every 15 min"
-                         num="44" />
-            <CoverageRow icon={<Icon.Sparkle size={14} />}
-                         label="On-demand"
-                         desc="user-triggered full deep scans"
-                         num="6" last={true} />
+                         label="Local WSL projects"
+                         desc="discovered in your scan directories"
+                         num={String(REPOS.filter(r => r.source === 'local').length)} />
+            <CoverageRow icon={<Icon.Refresh size={14} />}
+                         label="Repos scanned"
+                         desc="findings persisted across restarts"
+                         num={String(scannedCount)}
+                         pct={REPOS.length > 0 ? Math.round((scannedCount / REPOS.length) * 100) : 0} />
+            <CoverageRow icon={<Icon.Bug size={14} />}
+                         label="Open findings"
+                         desc="across all scanned repos"
+                         num={String(totalFindings)} last={true} />
           </div>
         </div>
       </div>
@@ -297,18 +301,6 @@ function RegressionCard({ regression, onJump }) {
       </div>
     </div>
   );
-}
-
-function genSpark(risk) {
-  // deterministic-ish 7 point line ending around current risk
-  const out = [];
-  let v = Math.max(5, risk - 18);
-  for (let i = 0; i < 6; i++) {
-    v += Math.sin(i * (risk * 0.13)) * 8 + 3;
-    out.push(Math.max(0, v));
-  }
-  out.push(risk);
-  return out;
 }
 
 window.SVOverview = { Overview };

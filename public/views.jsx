@@ -1,89 +1,158 @@
 // Repository Posture view + Remediation Kanban + Drift stream + Secrets.
 // Exposes window.SVViews.
 
-const { Icon: VwIcon, SevPill: VwSev, Sparkline: VwSpark, EcoBadge: VwEco } = window.SVUI;
+const { Icon: VwIcon, SevPill: VwSev, repoShortName: vwShort } = window.SVUI;
+
+// Trigger a scan for a repo (GitHub) or local project, then refresh the app data.
+function runScan(repo, onState) {
+  const loader = window.SVDataLoader;
+  if (!loader) return;
+  onState && onState('running');
+  const done = (r) => {
+    onState && onState(r && !r.error ? 'done' : 'error');
+    setTimeout(() => loader.refreshAll(), 500);
+  };
+  if (repo.source === 'local' && repo.path) {
+    loader.triggerLocalScan(repo.path).then(done);
+  } else {
+    // GitHub scans run async on the server; poll the result briefly.
+    loader.triggerScan(repo.name).then(res => {
+      if (!res || res.error || !res.scanId) return done(res);
+      let tries = 0;
+      const poll = setInterval(async () => {
+        tries++;
+        try {
+          const r = await fetch(`/api/scan/result/${res.scanId}`).then(x => x.json());
+          if (r.status === 'completed' || r.status === 'failed' || tries > 40) {
+            clearInterval(poll);
+            done(r);
+          }
+        } catch { clearInterval(poll); done({ error: 'poll failed' }); }
+      }, 2000);
+    });
+  }
+}
+
+// Wraps runScan in a Promise that resolves on terminal state.
+function runScanAsync(repo) {
+  return new Promise(resolve => {
+    runScan(repo, state => {
+      if (state === 'done' || state === 'error') resolve(state);
+    });
+  });
+}
 
 // ─────────────────────────────────────────────────────────────
 // REPOSITORY POSTURE
 // ─────────────────────────────────────────────────────────────
 
-function Posture({ repos, drift, onJump }) {
+function Posture({ repos, onJump }) {
+  const [bulkState, setBulkState] = React.useState('idle'); // idle | running | done
+  const [bulkProgress, setBulkProgress] = React.useState({ done: 0, total: 0 });
+  const cancelRef = React.useRef(false);
+
+  const localRepos  = repos.filter(r => r.source === 'local');
+  const githubRepos = repos.filter(r => r.source !== 'local');
+
+  async function scanAll(source) {
+    const targets = source === 'local' ? localRepos : githubRepos;
+    if (!targets.length || bulkState === 'running') return;
+    cancelRef.current = false;
+    setBulkState('running');
+    setBulkProgress({ done: 0, total: targets.length });
+    for (let i = 0; i < targets.length; i++) {
+      if (cancelRef.current) break;
+      await runScanAsync(targets[i]);
+      setBulkProgress(p => ({ ...p, done: i + 1 }));
+    }
+    setBulkState('done');
+    window.SVDataLoader && window.SVDataLoader.refreshAll();
+    setTimeout(() => setBulkState('idle'), 4000);
+  }
+
   return (
     <div className="view-inner">
-      {/* Toolbar */}
-      <div className="filters">
-        <span style={{ font: '500 11px/1 var(--font-sans)', color: 'var(--muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>View</span>
-        <div className="grp">
-          <button className="on">Cards</button>
-          <button>Table</button>
-          <button>Matrix</button>
-        </div>
-        <span className="div" />
-        <span className="chip">visibility: all</span>
-        <span className="chip">source: all</span>
-        <span className="chip">ecosystem: any</span>
-        <span className="spacer" />
-        <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>{(window.SVData.REPOS || []).length} repos indexed</span>
-        <button className="btn btn-ghost btn-sm">
-          <VwIcon.Plus size={12} />
-          Watch new path
-        </button>
-      </div>
-
       <div className="grid-2" style={{ gridTemplateColumns: '1.55fr 1fr', alignItems: 'start' }}>
 
         {/* Repo cards */}
         <div>
           <div className="section-head" style={{ marginTop: 0 }}>
             <h2>Repositories</h2>
-            <span className="lede">composite risk score · auto-discovered via GitHub App + WSL agent</span>
+            <span className="lede">{repos.length} indexed · from GitHub + local scan directories</span>
+            <span className="spacer" />
+            {localRepos.length > 0 && (
+              <button
+                className="btn btn-sm btn-primary"
+                disabled={bulkState === 'running'}
+                onClick={() => scanAll('local')}
+                title="Scan all local WSL projects in sequence"
+              >
+                {bulkState === 'running'
+                  ? <><VwIcon.Refresh size={12} /> {bulkProgress.done}/{bulkProgress.total}…</>
+                  : bulkState === 'done'
+                    ? <><VwIcon.Check size={12} /> All done</>
+                    : <><VwIcon.Play size={12} /> Scan all local</>}
+              </button>
+            )}
+            {githubRepos.length > 0 && (
+              <button
+                className="btn btn-sm btn-ghost"
+                disabled={bulkState === 'running'}
+                onClick={() => scanAll('github')}
+                title={`Scan all ${githubRepos.length} GitHub repos — may take several minutes`}
+              >
+                <VwIcon.Branch size={12} /> Scan all GitHub
+              </button>
+            )}
+            <button className="btn btn-ghost btn-sm" onClick={() => onJump && onJump('settings')}>
+              <VwIcon.Plus size={12} />
+              Add path
+            </button>
           </div>
+
+          {bulkState === 'running' && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '10px 14px', marginBottom: 12,
+              background: 'var(--surface-sunk)', border: '1px solid var(--line)',
+              borderRadius: 6, fontSize: 12.5,
+            }}>
+              <span style={{ width: 7, height: 7, borderRadius: 99, background: 'var(--accent)', animation: 'pulse 1.4s ease-in-out infinite' }} />
+              <span>Scanning {bulkProgress.done + 1} of {bulkProgress.total}…</span>
+              <div style={{ flex: 1, height: 4, background: 'var(--surface-2)', borderRadius: 99 }}>
+                <div style={{
+                  width: `${Math.round((bulkProgress.done / bulkProgress.total) * 100)}%`,
+                  height: '100%', background: 'var(--accent)', borderRadius: 99,
+                  transition: 'width 0.3s ease',
+                }} />
+              </div>
+              <span style={{ color: 'var(--muted)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                {Math.round((bulkProgress.done / bulkProgress.total) * 100)}%
+              </span>
+              <button className="btn btn-ghost btn-sm" style={{ padding: '2px 8px' }}
+                onClick={() => { cancelRef.current = true; setBulkState('idle'); }}>
+                Cancel
+              </button>
+            </div>
+          )}
+
           <div className="posture-grid">
+            {repos.length === 0 && (
+              <div className="card" style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '32px 20px' }}>
+                <div style={{ fontSize: 13.5, color: 'var(--ink-2)' }}>No repositories indexed yet.</div>
+                <p className="lede" style={{ marginTop: 6 }}>Connect GitHub or add a scan directory in Settings.</p>
+                <button className="btn btn-accent btn-sm" style={{ marginTop: 10 }} onClick={() => onJump && onJump('settings')}>
+                  <VwIcon.Settings size={12} /> Open Settings
+                </button>
+              </div>
+            )}
             {repos.map(r => <PostureCard key={r.id} repo={r} />)}
           </div>
         </div>
 
-        {/* Drift timeline */}
+        {/* Workspace composition — derived from real repo data */}
         <div>
-          <div className="section-head" style={{ marginTop: 0 }}>
-            <h2>Drift timeline</h2>
-            <span className="lede">last 72h · all repos</span>
-            <span className="spacer" />
-            <button className="btn btn-ghost btn-sm" onClick={() => onJump && onJump('drift')}>
-              Full event stream <VwIcon.ArrowRt size={12} />
-            </button>
-          </div>
-          <div className="card" style={{ padding: '18px 22px 14px' }}>
-            <div className="tl">
-              {drift.map((d, i) => (
-                <div key={i} className={`tl-item ${d.kind}`}>
-                  <div className="when">{d.when} · <span style={{ fontFamily: 'var(--font-mono)' }}>{d.repo}</span></div>
-                  <div className="what">{d.what}</div>
-                  <div className="who">{d.who}</div>
-                  {d.diff && (
-                    <div className="diff">
-                      {d.diff.map(([k, b, a]) => (
-                        <React.Fragment key={k}>
-                          <span className="lbl">{k}</span>
-                          <span><span className="before">{b}</span> <span style={{ color: 'var(--muted)' }}>→</span> <span className="after">{a}</span></span>
-                        </React.Fragment>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Policy compliance summary */}
-          <div className="card" style={{ marginTop: 14 }}>
-            <h3 style={{ marginBottom: 4 }}>Policy compliance</h3>
-            <p className="lede">naming + visibility rules</p>
-            <PolicyRow ok name="prod-* repos always private" detail="2/2 repos compliant" />
-            <PolicyRow ok name="infra-* repos require signed commits" detail="1/1 repos compliant" />
-            <PolicyRow warn name="auth-* repos require 2 reviewers" detail="1 violation — auth-service reduced to 1 reviewer today" />
-            <PolicyRow ok name="No public repos in payments-* family" detail="all private" last />
-          </div>
+          <VisibilitySummary repos={repos} />
         </div>
       </div>
     </div>
@@ -92,13 +161,13 @@ function Posture({ repos, drift, onJump }) {
 
 function PostureCard({ repo }) {
   const r = repo;
-  const sparkValues = genTrend(r.risk);
+  const [scanState, setScanState] = React.useState(null);
   const isAlert = r.findings > 0 && (r.risk >= 60 || r.secrets > 0);
   return (
     <div className={`posture ${isAlert ? 'alert' : ''}`}>
       <div className="top">
         <VwIcon.Branch size={13} />
-        <span className="name">{r.name.replace('worklifesg/', '')}</span>
+        <span className="name">{vwShort(r.name)}</span>
         <span className={`visb ${r.visibility === 'public' ? 'pub' : 'prv'}`}>
           {r.visibility === 'public' ? <><VwIcon.Globe size={9} />&nbsp;public</> : <><VwIcon.Lock size={9} />&nbsp;private</>}
         </span>
@@ -111,21 +180,15 @@ function PostureCard({ repo }) {
           <div className="score" style={{
             color: r.risk >= 75 ? 'var(--crit)' : r.risk >= 50 ? 'var(--high)' : r.risk >= 25 ? 'var(--med)' : 'var(--ok)',
           }}>{r.risk}</div>
-          <div className="lede">composite risk · 7-day trend</div>
+          <div className="lede">composite risk score</div>
         </div>
-        <VwSpark
-          values={sparkValues}
-          w={100}
-          h={32}
-          color={r.risk >= 75 ? 'var(--crit)' : r.risk >= 50 ? 'var(--high)' : 'var(--muted-2)'}
-        />
       </div>
 
       <div className="meta">
         {r.findings > 0 && <VwSev level={r.findings > 5 ? 'high' : 'medium'} mute={`${r.findings} finding${r.findings === 1 ? '' : 's'}`} />}
         {r.secrets > 0 && <VwSev level="critical" mute={`${r.secrets} secret${r.secrets === 1 ? '' : 's'}`} />}
-        {r.drift > 0 && <VwSev level="info" mute={`${r.drift} drift event${r.drift === 1 ? '' : 's'}`} />}
-        {r.findings === 0 && r.secrets === 0 && r.drift === 0 && <VwSev level="ok" mute="clean" />}
+        {r.lastScan !== 'never' && r.findings === 0 && r.secrets === 0 && <VwSev level="ok" mute="clean" />}
+        {r.lastScan === 'never' && <VwSev level="info" mute="not scanned" />}
       </div>
 
       <div className="footer">
@@ -134,138 +197,182 @@ function PostureCard({ repo }) {
           : <><VwIcon.Branch size={11} />&nbsp;{r.branch}</>}
         <span className="spacer" />
         <VwIcon.Clock size={11} />
-        <span>scanned {r.lastScan} ago</span>
+        <span>{r.lastScan === 'never' ? 'never scanned' : `scanned ${r.lastScan} ago`}</span>
       </div>
+
+      <button
+        className="btn btn-sm"
+        style={{ marginTop: 10, justifyContent: 'center', width: '100%' }}
+        disabled={scanState === 'running'}
+        onClick={() => runScan(r, setScanState)}
+      >
+        {scanState === 'running'
+          ? <><VwIcon.Refresh size={11} /> Scanning…</>
+          : scanState === 'done'
+            ? <><VwIcon.Check size={11} /> Scan complete</>
+            : scanState === 'error'
+              ? <><VwIcon.Alert size={11} /> Scan failed — retry</>
+              : <><VwIcon.Play size={11} /> Scan now</>}
+      </button>
     </div>
   );
 }
 
-function PolicyRow({ ok, warn, name, detail, last }) {
+function VisibilitySummary({ repos }) {
+  const pub = repos.filter(r => r.visibility === 'public').length;
+  const prv = repos.length - pub;
+  const gh = repos.filter(r => r.source === 'github').length;
+  const local = repos.length - gh;
+  const rows = [
+    { label: 'Public repositories', value: pub, hint: pub > 0 ? 'visible to anyone on GitHub' : 'none' },
+    { label: 'Private repositories', value: prv, hint: 'restricted access' },
+    { label: 'GitHub-sourced', value: gh, hint: 'indexed via gh / token' },
+    { label: 'Local WSL projects', value: local, hint: 'discovered in scan directories' },
+  ];
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 10,
-      padding: '10px 0',
-      borderBottom: last ? 'none' : '1px dashed var(--line)',
-    }}>
-      <span style={{
-        width: 18, height: 18, borderRadius: 99,
-        display: 'grid', placeItems: 'center',
-        background: ok ? 'var(--ok-tint)' : 'var(--high-tint)',
-        color: ok ? 'var(--ok)' : 'var(--high)',
-      }}>
-        {ok ? <VwIcon.Check size={11} /> : <VwIcon.Alert size={11} />}
-      </span>
-      <div>
-        <div style={{ fontSize: 12.5, color: 'var(--ink)' }}>{name}</div>
-        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{detail}</div>
-      </div>
+    <div className="card" style={{ marginTop: 14 }}>
+      <h3 style={{ marginBottom: 4 }}>Workspace composition</h3>
+      <p className="lede">across {repos.length} indexed {repos.length === 1 ? 'repo' : 'repos'}</p>
+      {rows.map((row, i) => (
+        <div key={row.label} style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '10px 0',
+          borderBottom: i === rows.length - 1 ? 'none' : '1px dashed var(--line)',
+        }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12.5, color: 'var(--ink)' }}>{row.label}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{row.hint}</div>
+          </div>
+          <span className="mono" style={{ fontSize: 14, color: 'var(--ink)' }}>{row.value}</span>
+        </div>
+      ))}
     </div>
   );
-}
-
-function genTrend(risk) {
-  const out = [];
-  let v = Math.max(8, risk - 22);
-  for (let i = 0; i < 13; i++) {
-    v += Math.sin(i * (risk * 0.07)) * 6 + (i / 12) * (risk - v) * 0.4 + 1;
-    out.push(Math.max(2, v));
-  }
-  out.push(risk);
-  return out;
 }
 
 // ─────────────────────────────────────────────────────────────
 // REMEDIATION KANBAN
 // ─────────────────────────────────────────────────────────────
 
-function Remediation({ findings, regression }) {
+const REM_OPTIONS = [
+  { id: 'open',         label: 'Open' },
+  { id: 'acknowledged', label: 'Acknowledged' },
+  { id: 'pr_open',      label: 'PR open' },
+  { id: 'resolved',     label: 'Resolved' },
+  { id: 'wont_fix',     label: "Won't fix" },
+];
+
+function Remediation({ findings }) {
+  const [syncState, setSyncState] = React.useState('idle'); // idle | syncing | done | error
+  const [syncMsg, setSyncMsg] = React.useState('');
+
   const cols = [
     { id: 'open',         label: 'Open',         desc: 'awaiting action' },
-    { id: 'acknowledged', label: 'Acknowledged', desc: 'SLA paused' },
-    { id: 'pr_open',      label: 'PR open',      desc: 'awaiting merge' },
-    { id: 'regression',   label: 'Regression',   desc: 'deploy broke' },
-    { id: 'resolved',     label: 'Resolved',     desc: '7-day window' },
+    { id: 'acknowledged', label: 'Acknowledged', desc: 'triaged, deferred' },
+    { id: 'pr_open',      label: 'PR open',      desc: 'fix in review' },
+    { id: 'resolved',     label: 'Resolved',     desc: 'fix merged' },
     { id: 'wont_fix',     label: "Won't fix",    desc: 'accepted risk' },
   ];
 
-  // Synthesize some additional cards to look full
-  const synth = [
-    ...findings,
-    { id:'fr1', severity:'medium', cve:'CVE-2024-19002', pkg:'urllib3', installed:'2.0.4', fixed:'2.2.1', repo:'worklifesg/data-pipeline', status:'resolved', sla:'closed', resolvedAgo:'2d' },
-    { id:'fr2', severity:'high',   cve:'CVE-2024-11053', pkg:'curl',    installed:'8.6.0', fixed:'8.8.0', repo:'worklifesg/edge-gateway', status:'resolved', sla:'closed', resolvedAgo:'5d' },
-    { id:'fw1', severity:'low',    cve:'CVE-2023-50447', pkg:'pillow',  installed:'10.0.1', fixed:'10.3.0', repo:'worklifesg/mobile-app', status:'wont_fix', sla:'—' },
-  ];
-
   const grouped = cols.reduce((acc, c) => {
-    acc[c.id] = synth.filter(f => f.status === c.id);
+    acc[c.id] = findings.filter(f => f.status === c.id);
     return acc;
   }, {});
+  const openCount = grouped.open.length;
+
+  async function setStatus(finding, status) {
+    if (!window.SVDataLoader) return;
+    if (status === 'open') await window.SVDataLoader.resetFindingStatus(finding);
+    else await window.SVDataLoader.setFindingStatus(finding, status);
+  }
+
+  async function syncPRs() {
+    if (!window.SVDataLoader || syncState === 'syncing') return;
+    setSyncState('syncing'); setSyncMsg('');
+    const out = await window.SVDataLoader.syncPRStatus();
+    if (out && !out.error) {
+      setSyncState('done');
+      setSyncMsg(`Matched ${out.matched} finding${out.matched === 1 ? '' : 's'} across ${out.reposChecked} repo${out.reposChecked === 1 ? '' : 's'}`);
+    } else {
+      setSyncState('error');
+      setSyncMsg((out && out.error) || 'sync failed');
+    }
+    setTimeout(() => setSyncState('idle'), 6000);
+  }
 
   return (
     <div className="view-inner">
       <div className="filters">
-        <span style={{ font: '500 11px/1 var(--font-sans)', color: 'var(--muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Group by</span>
-        <div className="grp">
-          <button className="on">Status</button>
-          <button>Repo</button>
-          <button>Severity</button>
-        </div>
-        <span className="div" />
-        <span className="chip">severity: any</span>
-        <span className="chip">post-rollback: shown</span>
+        <span style={{ font: '500 11px/1 var(--font-sans)', color: 'var(--muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Grouped by status</span>
+        <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 10 }}>
+          {openCount > 0 ? `${openCount} open finding${openCount === 1 ? '' : 's'} awaiting action` : 'no open findings'}
+        </span>
         <span className="spacer" />
-        <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>SLA clock running on 13 cards · 1 overdue</span>
+        {syncMsg && (
+          <span style={{ fontSize: 11.5, color: syncState === 'error' ? 'var(--crit)' : 'var(--muted)', marginRight: 10 }}>{syncMsg}</span>
+        )}
+        <button className="btn btn-sm" disabled={syncState === 'syncing'} onClick={syncPRs}
+          title="Check open GitHub PRs and flag findings whose package/CVE is referenced">
+          {syncState === 'syncing'
+            ? <><VwIcon.Refresh size={12} /> Checking PRs…</>
+            : <><VwIcon.GitPR size={12} /> Sync PR status from GitHub</>}
+        </button>
       </div>
 
-      {regression && <RegressionInline regression={regression} />}
+      {findings.length === 0 && (
+        <div className="card" style={{ textAlign: 'center', padding: '32px 20px' }}>
+          <div style={{ fontSize: 13.5, color: 'var(--ink-2)' }}>No findings to remediate yet.</div>
+          <p className="lede" style={{ marginTop: 6 }}>Run a scan from Repository Posture to populate this board.</p>
+        </div>
+      )}
 
-      <div className="kanban">
-        {cols.map(c => (
-          <div className="kcol" key={c.id}>
-            <div className="kcol-h">
-              <div>
-                <div className="name">{c.label}</div>
-                <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2, letterSpacing: '0.01em' }}>{c.desc}</div>
-              </div>
-              <span className="count">{grouped[c.id].length}</span>
-            </div>
-            <div className="kcol-body">
-              {grouped[c.id].length === 0 && (
-                <div style={{ padding: '20px 8px', textAlign: 'center', fontSize: 11.5, color: 'var(--muted-2)' }}>
-                  nothing here
+      {findings.length > 0 && (
+        <div className="kanban">
+          {cols.map(c => (
+            <div className="kcol" key={c.id}>
+              <div className="kcol-h">
+                <div>
+                  <div className="name">{c.label}</div>
+                  <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2, letterSpacing: '0.01em' }}>{c.desc}</div>
                 </div>
-              )}
-              {grouped[c.id].map(f => <KCard key={f.id} f={f} />)}
+                <span className="count">{grouped[c.id].length}</span>
+              </div>
+              <div className="kcol-body">
+                {grouped[c.id].length === 0 && (
+                  <div style={{ padding: '20px 8px', textAlign: 'center', fontSize: 11.5, color: 'var(--muted-2)' }}>
+                    nothing here
+                  </div>
+                )}
+                {grouped[c.id].map(f => <KCard key={f.id} f={f} onSetStatus={setStatus} />)}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function KCard({ f }) {
-  const isRegr = f.status === 'regression';
+function KCard({ f, onSetStatus }) {
+  const hasFix = f.fixed && f.fixed !== 'none';
   return (
-    <div className={`kcard ${isRegr ? 'regression' : ''}`}>
+    <div className="kcard">
       <div className="row">
         <VwSev level={f.severity} />
-        {isRegr && (
-          <span className="tag" style={{
-            color: 'var(--accent-ink)',
-            background: 'var(--accent-tint)',
-            borderColor: '#f6cbbe',
-            fontSize: 10,
-            padding: '2px 5px',
-          }}>post-rollback</span>
+        {f.statusSource === 'github' && (
+          <span className="tag" style={{ fontSize: 10, padding: '2px 5px' }} title="Status set automatically from a matching open PR">auto</span>
         )}
-        <span className="sla">{f.sla === 'paused' ? 'paused' : f.sla === 'overdue' ? <span className="crit">overdue</span> : f.resolvedAgo ? `${f.resolvedAgo} ago` : f.sla}</span>
+        <span className="sla">{f.sla}</span>
       </div>
       <div className="cve">{f.cve}</div>
-      <div className="pkg">{f.pkg} <span style={{ color: 'var(--muted)', fontWeight: 400 }}>→ {f.fixed}</span></div>
-      <div className="repo">{f.repo.replace('worklifesg/', '')}</div>
-      {f.status === 'pr_open' && (
-        <div style={{
+      <div className="pkg">
+        {f.pkg}
+        {hasFix && <span style={{ color: 'var(--muted)', fontWeight: 400 }}> → {f.fixed}</span>}
+      </div>
+      <div className="repo">{vwShort(f.repo)}</div>
+
+      {f.status === 'pr_open' && f.prUrl && (
+        <a href={f.prUrl} target="_blank" rel="noreferrer" style={{
           display: 'flex', alignItems: 'center', gap: 6,
           padding: '6px 8px',
           background: 'var(--accent-tint)',
@@ -274,40 +381,26 @@ function KCard({ f }) {
           fontSize: 11,
           color: 'var(--accent-ink)',
           marginTop: 4,
+          textDecoration: 'none',
         }}>
           <VwIcon.GitPR size={11} />
-          <span className="mono">{f.pr || '#142'}</span>
-          <span style={{ marginLeft: 'auto' }}>awaiting review</span>
-        </div>
+          <span className="mono">{f.pr || 'PR'}</span>
+          <span style={{ marginLeft: 'auto' }}>open on GitHub →</span>
+        </a>
       )}
-      {isRegr && (
-        <button className="btn btn-sm btn-accent" style={{ marginTop: 6, justifyContent: 'center' }}>
-          <VwIcon.GitPR size={11} />
-          Open revert PR
-        </button>
-      )}
-    </div>
-  );
-}
 
-function RegressionInline({ regression }) {
-  return (
-    <div className="regr" style={{ marginBottom: 14 }}>
-      <div>
-        <span className="label"><VwIcon.Alert size={11} />Regression incident</span>
-        <h3 style={{ marginTop: 8 }}>
-          {regression.repo} · deploy failed {regression.delta} after merge
-        </h3>
-        <p className="lede">{regression.reason}</p>
-        <div className="meta">
-          <div><span className="lbl">Merged PR</span><span className="val">{regression.prMerged}</span></div>
-          <div><span className="lbl">Failing run</span><span className="val">{regression.deployFailed}</span></div>
-          <div><span className="lbl">Pre-merge SHA</span><span className="val">{regression.preCommit}</span></div>
-        </div>
-      </div>
-      <div className="actions">
-        <button className="btn btn-accent"><VwIcon.GitPR size={13} />Open revert PR</button>
-        <button className="btn"><VwIcon.History size={13} />Restore lockfile</button>
+      {f.note && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>{f.note}</div>}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+        <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>Status</span>
+        <select
+          className="sv-input"
+          style={{ flex: 1, fontSize: 11.5, padding: '4px 6px' }}
+          value={f.status}
+          onChange={e => onSetStatus && onSetStatus(f, e.target.value)}
+        >
+          {REM_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+        </select>
       </div>
     </div>
   );
@@ -318,24 +411,28 @@ function RegressionInline({ regression }) {
 // ─────────────────────────────────────────────────────────────
 
 function DriftStream({ events }) {
+  const [classFilter, setClassFilter] = React.useState('all');
+  const classes = [
+    { id: 'all', label: 'All' },
+    { id: 'crit', label: 'Critical' },
+    { id: 'warn', label: 'Warning' },
+    { id: 'info', label: 'Info' },
+    { id: 'benign', label: 'Benign' },
+  ];
+  const shown = classFilter === 'all' ? events : events.filter(e => e.cls === classFilter);
   return (
     <div className="view-inner">
       <div className="filters">
         <span style={{ font: '500 11px/1 var(--font-sans)', color: 'var(--muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Class</span>
         <div className="grp">
-          <button className="on">All</button>
-          <button>Critical</button>
-          <button>Warning</button>
-          <button>Info</button>
-          <button>Benign</button>
+          {classes.map(c => (
+            <button key={c.id} className={classFilter === c.id ? 'on' : ''} onClick={() => setClassFilter(c.id)}>{c.label}</button>
+          ))}
         </div>
-        <span className="div" />
-        <span className="chip">kind: any</span>
-        <span className="chip">repo: any</span>
         <span className="spacer" />
         <span style={{ fontSize: 11.5, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 7, height: 7, borderRadius: 99, background: 'var(--ok)', boxShadow: '0 0 0 3px rgba(31,111,69,.15)' }} />
-          live · SSE connected · /api/events/stream
+          live · SSE · /api/events/stream
         </span>
       </div>
 
@@ -343,14 +440,16 @@ function DriftStream({ events }) {
         <div className="stream">
           <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', background: 'var(--surface-sunk)', borderBottom: '1px solid var(--line)' }}>
             <h3 style={{ margin: 0, font: '500 13px/1.2 var(--font-sans)' }}>Event stream</h3>
-            <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--muted)' }}>last 30 min · 12 events</span>
-            <span className="spacer" />
-            <button className="btn btn-ghost btn-sm">
-              <VwIcon.Filter size={11} />
-              Configure alerts
-            </button>
+            <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--muted)' }}>{shown.length} event{shown.length === 1 ? '' : 's'}</span>
           </div>
-          {events.map((e, i) => (
+          {shown.length === 0 && (
+            <div style={{ padding: '24px 16px', fontSize: 12.5, color: 'var(--muted)' }}>
+              {events.length === 0
+                ? 'No recent GitHub activity. Events appear here once your account has public activity.'
+                : 'No events in this class.'}
+            </div>
+          )}
+          {shown.map((e, i) => (
             <div key={`${e.ts}-${i}`} className={`stream-row ${i === 0 ? 'new' : ''}`}>
               <span className="ts">{e.ts}</span>
               <EventIcon kind={e.kind} cls={e.cls} />
@@ -362,42 +461,37 @@ function DriftStream({ events }) {
         </div>
 
         <div>
-          <div className="card">
-            <h3 style={{ marginBottom: 4 }}>Webhook sources</h3>
-            <p className="lede">incoming connections to /api/webhooks/github</p>
-            <Source label="push" count="142" trend="+18" />
-            <Source label="repository" count="3" />
-            <Source label="member" count="2" trend="+1" />
-            <Source label="workflow_run (deployment)" count="29" />
-            <Source label="branch_protection_rule" count="4" trend="+1" warn />
-            <Source label="secret_scanning_alert" count="1" trend="+1" crit last />
-          </div>
-
-          <div className="card" style={{ marginTop: 14 }}>
-            <h3 style={{ marginBottom: 4 }}>Event classes</h3>
-            <p className="lede">last 24h</p>
-            <ClassRow cls="crit"   count={3}  label="Critical" />
-            <ClassRow cls="warn"   count={11} label="Warning" />
-            <ClassRow cls="info"   count={67} label="Info" />
-            <ClassRow cls="benign" count={148} label="Benign" last />
-          </div>
+          <EventClassBreakdown events={events} />
 
           <div className="card" style={{ marginTop: 14, background: 'var(--surface-sunk)' }}>
-            <h3 style={{ marginBottom: 4 }}>Stream uptime</h3>
-            <p className="lede">webhook latency p95</p>
-            <div style={{
-              font: '400 36px/1 var(--font-display)',
-              letterSpacing: '-0.01em',
-              marginTop: 6,
-            }}>
-              312<small style={{ font: '500 13px var(--font-sans)', color: 'var(--muted)', marginLeft: 4 }}>ms</small>
-            </div>
-            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>
-              <span style={{ color: 'var(--ok)' }}>● healthy</span> · 99.97% last 7d · smee.io tunnel stable
-            </div>
+            <h3 style={{ marginBottom: 4 }}>About this feed</h3>
+            <p className="lede" style={{ margin: 0 }}>
+              Live activity is pulled from the GitHub events API for the connected account and refreshed
+              via server-sent events. Push, PR, branch, and visibility changes appear here as they happen.
+            </p>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function EventClassBreakdown({ events }) {
+  const order = [
+    { cls: 'crit', label: 'Critical' },
+    { cls: 'warn', label: 'Warning' },
+    { cls: 'info', label: 'Info' },
+    { cls: 'benign', label: 'Benign' },
+  ];
+  const counts = events.reduce((acc, e) => { acc[e.cls] = (acc[e.cls] || 0) + 1; return acc; }, {});
+  const max = Math.max(1, ...order.map(o => counts[o.cls] || 0));
+  return (
+    <div className="card">
+      <h3 style={{ marginBottom: 4 }}>Event classes</h3>
+      <p className="lede">{events.length} recent event{events.length === 1 ? '' : 's'}</p>
+      {order.map((o, i) => (
+        <ClassRow key={o.cls} cls={o.cls} count={counts[o.cls] || 0} label={o.label} max={max} last={i === order.length - 1} />
+      ))}
     </div>
   );
 }
@@ -425,32 +519,7 @@ function EventIcon({ kind, cls }) {
   );
 }
 
-function Source({ label, count, trend, warn, crit, last }) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 10,
-      padding: '9px 0',
-      borderBottom: last ? 'none' : '1px dashed var(--line)',
-      fontSize: 12.5,
-    }}>
-      <span style={{
-        width: 6, height: 6, borderRadius: 99,
-        background: crit ? 'var(--crit)' : warn ? 'var(--high)' : 'var(--muted-2)',
-      }} />
-      <span className="mono" style={{ color: 'var(--ink-2)' }}>{label}</span>
-      <span className="spacer" />
-      {trend && (
-        <span style={{
-          fontFamily: 'var(--font-mono)', fontSize: 11,
-          color: crit ? 'var(--crit)' : warn ? 'var(--high)' : 'var(--muted)',
-        }}>{trend}</span>
-      )}
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink)', width: 36, textAlign: 'right' }}>{count}</span>
-    </div>
-  );
-}
-
-function ClassRow({ cls, count, label, last }) {
+function ClassRow({ cls, count, label, last, max = 1 }) {
   return (
     <div style={{
       display: 'grid', gridTemplateColumns: '70px 1fr 36px',
@@ -462,7 +531,7 @@ function ClassRow({ cls, count, label, last }) {
       <span className={`cls cls-${cls}`} style={{ justifySelf: 'start' }}>{label}</span>
       <div style={{ height: 6, borderRadius: 99, background: 'var(--surface-2)' }}>
         <div style={{
-          width: `${Math.min(100, (count / 148) * 100)}%`, height: '100%', borderRadius: 99,
+          width: `${Math.min(100, (count / max) * 100)}%`, height: '100%', borderRadius: 99,
           background: cls === 'crit' ? 'var(--crit)' : cls === 'warn' ? 'var(--high)' : cls === 'info' ? 'var(--info)' : 'var(--muted-2)',
         }} />
       </div>
@@ -476,28 +545,21 @@ function ClassRow({ cls, count, label, last }) {
 // ─────────────────────────────────────────────────────────────
 
 function SecretsView({ secrets }) {
+  const verified = secrets.filter(s => s.verified).length;
+  const historical = secrets.filter(s => s.status === 'historical').length;
+  const active = secrets.filter(s => s.status === 'active').length;
   return (
     <div className="view-inner">
       <div className="stat-row" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-        <SecretStat label="Verified live"      value="2" accent footnote="confirmed via API probe — rotate immediately" />
-        <SecretStat label="Historical exposure" value="2" footnote="removed from HEAD but still in git history" />
-        <SecretStat label="Pre-commit blocks (7d)" value="6" footnote="gitleaks hook stopped 6 leaks before push" />
+        <SecretStat label="Verified live" value={String(verified)} accent={verified > 0} footnote={verified > 0 ? 'confirmed via API probe — rotate immediately' : 'no verified live credentials'} />
+        <SecretStat label="Active (unverified)" value={String(active)} footnote="pattern matches not yet confirmed" />
+        <SecretStat label="Historical" value={String(historical)} footnote="found in git history" />
       </div>
 
       <div className="tbl-wrap">
         <div className="tbl-head">
           <h3>Secrets & credentials</h3>
           <span className="lede">redacted preview only · full value never persisted</span>
-          <span className="right">
-            <button className="btn btn-ghost btn-sm">
-              <VwIcon.Eye size={12} />
-              Unmask selected
-            </button>
-            <button className="btn btn-sm btn-accent">
-              <VwIcon.Key size={12} />
-              Bulk rotate
-            </button>
-          </span>
         </div>
         <table className="tbl">
           <thead>
@@ -508,10 +570,16 @@ function SecretsView({ secrets }) {
               <th style={{ width: 160 }}>Preview</th>
               <th style={{ width: 110 }}>Classification</th>
               <th style={{ width: 100 }}>Found</th>
-              <th style={{ width: 220 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
+            {secrets.length === 0 && (
+              <tr>
+                <td colSpan={6} style={{ padding: '22px 14px', textAlign: 'center', fontSize: 12.5, color: 'var(--muted)' }}>
+                  No secrets detected. Run a scan to check your repos and local projects.
+                </td>
+              </tr>
+            )}
             {secrets.map(s => (
               <tr key={s.id}>
                 <td>
@@ -555,42 +623,10 @@ function SecretsView({ secrets }) {
                       : <VwSev level="medium" mute="historical" />}
                 </td>
                 <td style={{ fontSize: 12, color: 'var(--muted)' }}>{s.foundAt}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="btn btn-sm btn-accent">
-                      <VwIcon.Key size={11} />
-                      Rotate & revoke
-                    </button>
-                    <button className="btn btn-sm">View commit</button>
-                  </div>
-                </td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
-
-      <div className="card" style={{ marginTop: 14 }}>
-        <h3 style={{ marginBottom: 4 }}>Rotation playbooks</h3>
-        <p className="lede">one-click flow per provider</p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
-          {['AWS IAM', 'GitHub PAT', 'Stripe', 'Twilio', 'SendGrid'].map(p => (
-            <div key={p} style={{
-              padding: '12px',
-              border: '1px solid var(--line)',
-              borderRadius: 8,
-              fontSize: 12.5,
-              display: 'flex', flexDirection: 'column', gap: 4,
-              background: 'var(--surface-sunk)',
-            }}>
-              <span style={{ font: '500 13px var(--font-sans)' }}>{p}</span>
-              <span style={{ color: 'var(--muted)', fontSize: 11.5 }}>4-step rotation flow</span>
-              <button className="btn btn-sm btn-ghost" style={{ alignSelf: 'flex-start', marginTop: 4, padding: '4px 0' }}>
-                Open playbook →
-              </button>
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );
@@ -614,26 +650,24 @@ function SecretStat({ label, value, footnote, accent }) {
 // ─────────────────────────────────────────────────────────────
 
 function ScansView({ jobs, tools }) {
+  const repos = window.SVData.REPOS || [];
+  const scanned = repos.filter(r => r.lastScan && r.lastScan !== 'never').length;
+  const totalFindings = (window.SVData.FINDINGS || []).length;
+  const totalSecrets = (window.SVData.SECRETS || []).length;
   return (
     <div className="view-inner">
       <div className="stat-row" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-        <StatPlain label="Repos in scope"  value={String((window.SVData.REPOS || []).length)} foot={`${(window.SVData.REPOS || []).filter(r => r.source === 'github').length} GitHub · ${(window.SVData.REPOS || []).filter(r => r.source === 'local').length} local WSL`} />
-        <StatPlain label="Scans last 24h"  value="142" foot="138 push · 47 daily · 6 on-demand" />
-        <StatPlain label="Median scan time" value="2.4" unit="s" foot="fast scanners · npm/pip/cargo audit" />
-        <StatPlain label="Deep scan time"   value="38" unit="s" foot="OSV + Grype + Syft (p50)" />
+        <StatPlain label="Repos in scope"  value={String(repos.length)} foot={`${repos.filter(r => r.source === 'github').length} GitHub · ${repos.filter(r => r.source === 'local').length} local WSL`} />
+        <StatPlain label="Repos scanned"   value={String(scanned)} foot={scanned === 0 ? 'run a scan from Repository Posture' : `${repos.length - scanned} not yet scanned`} />
+        <StatPlain label="Total findings"  value={String(totalFindings)} foot="across all scanned repos" />
+        <StatPlain label="Secrets found"   value={String(totalSecrets)} foot="from gitleaks / trufflehog" />
       </div>
 
       <div className="grid-2" style={{ gridTemplateColumns: '1.5fr 1fr', alignItems: 'start' }}>
         <div className="tbl-wrap">
           <div className="tbl-head">
             <h3>Scan queue</h3>
-            <span className="lede">running, queued, recently completed</span>
-            <span className="right">
-              <button className="btn btn-sm btn-accent">
-                <VwIcon.Play size={11} />
-                Run scan now
-              </button>
-            </span>
+            <span className="lede">scans run this session · trigger from Repository Posture</span>
           </div>
           <table className="tbl">
             <thead>
@@ -647,7 +681,14 @@ function ScansView({ jobs, tools }) {
               </tr>
             </thead>
             <tbody>
-              {jobs.map(j => (
+              {(!jobs || jobs.length === 0) && (
+                <tr>
+                  <td colSpan={6} style={{ padding: '22px 14px', textAlign: 'center', fontSize: 12.5, color: 'var(--muted)' }}>
+                    No scans run this session. Use <b>Scan now</b> on any repository in Repository Posture.
+                  </td>
+                </tr>
+              )}
+              {(jobs || []).map(j => (
                 <tr key={j.id}>
                   <td className="repo">{j.repo}</td>
                   <td>
@@ -673,12 +714,11 @@ function ScansView({ jobs, tools }) {
 
         <div>
           <div className="card">
-            <h3 style={{ marginBottom: 4 }}>Schedule</h3>
-            <p className="lede">three-trigger model — push, daily, on-demand</p>
-            <Schedule label="On push"  desc="every push · npm/pip/cargo audit + Gitleaks (changed files)" cadence="< 30s" />
-            <Schedule label="Daily"    desc="02:00 UTC · OSV-Scanner + Grype + Syft · all 47 repos" cadence="38s p50" />
-            <Schedule label="Weekly"   desc="Sundays 03:00 UTC · Trufflehog full git history rescan" cadence="6 min p50" />
-            <Schedule label="WSL agent" desc="every 15 min · OSV + Gitleaks · 11 local projects" cadence="systemd" last />
+            <h3 style={{ marginBottom: 4 }}>How scanning works</h3>
+            <p className="lede">on-demand · results persist locally</p>
+            <Schedule label="GitHub repos" desc="shallow-cloned to a temp dir, then npm audit + Grype + Gitleaks" cadence="on-demand" />
+            <Schedule label="Local projects" desc="scanned in place from your configured WSL directories" cadence="on-demand" />
+            <Schedule label="Persistence" desc="findings saved to .securevault/results.json and survive restarts" cadence="local" last />
           </div>
 
           <div className="card" style={{ marginTop: 14 }}>

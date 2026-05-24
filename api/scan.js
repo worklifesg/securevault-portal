@@ -2,6 +2,9 @@ const { Router } = require('express');
 const { execSync, exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { getGhEnv } = require('../lib/config');
+const { saveResult, loadResults } = require('../lib/store');
+const { invalidateRepoCache } = require('./repos');
 
 const router = Router();
 
@@ -39,6 +42,14 @@ function getToolVersions() {
 
 function npmAudit(projectPath) {
   if (!fs.existsSync(path.join(projectPath, 'package.json'))) return [];
+
+  // Yarn project (yarn.lock present, no package-lock.json) → use yarn audit
+  const hasYarnLock = fs.existsSync(path.join(projectPath, 'yarn.lock'));
+  const hasNpmLock  = fs.existsSync(path.join(projectPath, 'package-lock.json'));
+  if (hasYarnLock && !hasNpmLock && toolAvailable('yarn')) {
+    return yarnAudit(projectPath);
+  }
+
   try {
     const raw = execSync('npm audit --json 2>/dev/null || true', {
       encoding: 'utf-8',
@@ -63,6 +74,41 @@ function npmAudit(projectPath) {
       range: v.range || '',
       installed: v.version || 'unknown',
     }));
+  } catch { return []; }
+}
+
+function yarnAudit(projectPath) {
+  try {
+    // yarn audit --json emits one JSON object per line
+    const raw = execSync('yarn npm audit --json 2>/dev/null || true', {
+      encoding: 'utf-8',
+      cwd: projectPath,
+      timeout: 60000,
+    });
+    const findings = [];
+    for (const line of raw.trim().split('\n').filter(Boolean)) {
+      try {
+        const obj = JSON.parse(line);
+        // Yarn audit emits advisory objects with type "auditAdvisory"
+        if (obj.type !== 'auditAdvisory') continue;
+        const a = obj.data?.advisory || obj.data;
+        if (!a) continue;
+        findings.push({
+          pkg: a.module_name || a.package_name || 'unknown',
+          severity: a.severity || 'medium',
+          title: a.title || `Vulnerability in ${a.module_name}`,
+          url: a.url || a.references || '',
+          cve: (a.cves && a.cves[0]) || a.github_advisories?.[0]?.ghsa_id || '',
+          cvss: a.cvss?.score || 0,
+          via: [],
+          fixAvailable: !!(a.patched_versions && a.patched_versions !== '<0.0.0'),
+          range: a.vulnerable_versions || '',
+          installed: 'unknown',
+          scanner: 'yarn-audit',
+        });
+      } catch { /* skip malformed lines */ }
+    }
+    return findings;
   } catch { return []; }
 }
 
@@ -148,15 +194,19 @@ router.post('/repo', async (req, res) => {
   scanResults.set(scanId, { status: 'running', repo: repoFullName, startedAt: new Date().toISOString() });
   res.json({ scanId, status: 'started' });
 
+  const startedAt = Date.now();
   try {
     const tmpDir = `/tmp/securevault-scan-${Date.now()}`;
-    execSync(`gh repo clone ${repoFullName} "${tmpDir}" -- --depth 1 2>/dev/null`, { timeout: 60000 });
+    execSync(`gh repo clone ${repoFullName} "${tmpDir}" -- --depth 1 2>/dev/null`, { timeout: 60000, env: getGhEnv() });
 
     const findings = [];
     const secrets = [];
 
+    const isYarn = fs.existsSync(path.join(tmpDir, 'yarn.lock')) && !fs.existsSync(path.join(tmpDir, 'package-lock.json'));
+    const auditTool = isYarn ? 'yarn-audit' : 'npm-audit';
+
     const npmFindings = npmAudit(tmpDir);
-    findings.push(...npmFindings.map(f => ({ ...f, scanner: 'npm-audit', repo: repoFullName })));
+    findings.push(...npmFindings.map(f => ({ ...f, scanner: f.scanner || auditTool, repo: repoFullName })));
 
     const grypeFinding = grypeScan(tmpDir);
     findings.push(...grypeFinding.map(f => ({ ...f, repo: repoFullName })));
@@ -166,13 +216,18 @@ router.post('/repo', async (req, res) => {
 
     execSync(`rm -rf "${tmpDir}"`);
 
-    scanResults.set(scanId, {
+    const result = {
       status: 'completed',
       repo: repoFullName,
       findings,
       secrets,
       completedAt: new Date().toISOString(),
-    });
+      durationMs: Date.now() - startedAt,
+      tools: [auditTool, 'grype', 'gitleaks'],
+    };
+    scanResults.set(scanId, result);
+    saveResult(repoFullName, result);
+    invalidateRepoCache();
   } catch (err) {
     scanResults.set(scanId, {
       status: 'failed',
@@ -188,11 +243,15 @@ router.post('/local', (req, res) => {
   if (!fs.existsSync(projectPath)) return res.status(404).json({ error: 'path not found' });
 
   const scanId = `scan-local-${Date.now()}`;
+  const startedAt = Date.now();
   const findings = [];
   const secrets = [];
 
+  const isYarnLocal = fs.existsSync(path.join(projectPath, 'yarn.lock')) && !fs.existsSync(path.join(projectPath, 'package-lock.json'));
+  const auditToolLocal = isYarnLocal ? 'yarn-audit' : 'npm-audit';
+
   const npmFindings = npmAudit(projectPath);
-  findings.push(...npmFindings.map(f => ({ ...f, scanner: 'npm-audit', repo: projectPath })));
+  findings.push(...npmFindings.map(f => ({ ...f, scanner: f.scanner || auditToolLocal, repo: projectPath })));
 
   const grypeFinding = grypeScan(projectPath);
   findings.push(...grypeFinding.map(f => ({ ...f, repo: projectPath })));
@@ -200,13 +259,18 @@ router.post('/local', (req, res) => {
   const leaks = gitleaksScan(projectPath);
   secrets.push(...leaks.map(s => ({ ...s, repo: projectPath })));
 
-  scanResults.set(scanId, {
+  const result = {
     status: 'completed',
     repo: projectPath,
     findings,
     secrets,
     completedAt: new Date().toISOString(),
-  });
+    durationMs: Date.now() - startedAt,
+    tools: [auditToolLocal, 'grype', 'gitleaks'],
+  };
+  scanResults.set(scanId, result);
+  saveResult(projectPath, result);
+  invalidateRepoCache();
 
   res.json({ scanId, status: 'completed', findings: findings.length, secrets: secrets.length });
 });
@@ -218,11 +282,16 @@ router.get('/result/:scanId', (req, res) => {
 });
 
 router.get('/results', (_req, res) => {
-  const all = [];
-  for (const [id, result] of scanResults) {
-    all.push({ scanId: id, ...result });
+  // Persisted results survive restarts; in-memory entries cover in-flight scans.
+  const merged = new Map();
+  const persisted = loadResults();
+  for (const [key, result] of Object.entries(persisted)) {
+    merged.set(key, { scanId: `persisted:${key}`, ...result });
   }
-  res.json(all);
+  for (const [id, result] of scanResults) {
+    if (result.repo) merged.set(result.repo, { scanId: id, ...result });
+  }
+  res.json([...merged.values()]);
 });
 
 module.exports = { scanRouter: router };

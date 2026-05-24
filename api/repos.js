@@ -1,5 +1,7 @@
 const { Router } = require('express');
 const { execSync } = require('child_process');
+const { getConfig, getGhEnv } = require('../lib/config');
+const { statsForRepo } = require('../lib/store');
 
 const router = Router();
 
@@ -9,7 +11,7 @@ const CACHE_TTL = 5 * 60 * 1000;
 
 function ghExec(args) {
   return JSON.parse(
-    execSync(`gh ${args}`, { encoding: 'utf-8', timeout: 30000 })
+    execSync(`gh ${args}`, { encoding: 'utf-8', timeout: 30000, env: getGhEnv() })
   );
 }
 
@@ -19,8 +21,8 @@ function getRepos() {
 
   const repos = JSON.parse(
     execSync(
-      'gh repo list --json name,nameWithOwner,visibility,defaultBranchRef,primaryLanguage,pushedAt,isArchived,description --limit 100',
-      { encoding: 'utf-8', timeout: 30000 }
+      'gh repo list --json name,nameWithOwner,visibility,defaultBranchRef,primaryLanguage,pushedAt,isArchived,description --limit 200',
+      { encoding: 'utf-8', timeout: 30000, env: getGhEnv() }
     )
   );
 
@@ -35,11 +37,7 @@ function getRepos() {
       branch: r.defaultBranchRef?.name || 'main',
       source: 'github',
       pushedAt: r.pushedAt,
-      risk: 0,
-      findings: 0,
-      secrets: 0,
-      drift: 0,
-      lastScan: 'never',
+      ...statsForRepo({ name: r.nameWithOwner }),
     }));
 
   cacheTime = now;
@@ -48,11 +46,11 @@ function getRepos() {
 
 function getLocalProjects() {
   const { readdirSync, existsSync, statSync } = require('fs');
-  const home = process.env.HOME || '/home/devuser';
+  const home = require('os').homedir();
   const projects = [];
   const markers = ['package.json', 'requirements.txt', 'pyproject.toml', 'go.mod', 'Cargo.toml'];
 
-  const scanDirs = [home];
+  const { scanDirs } = getConfig();
   let idx = 100;
 
   for (const scanDir of scanDirs) {
@@ -73,17 +71,14 @@ function getLocalProjects() {
         projects.push({
           id: `l${idx++}`,
           name: projectPath.replace(home, '~'),
+          path: projectPath,
           visibility: 'private',
           lang,
           description: '',
           branch: '—',
           source: 'local',
           pushedAt: statSync(projectPath).mtime.toISOString(),
-          risk: 0,
-          findings: 0,
-          secrets: 0,
-          drift: 0,
-          lastScan: 'never',
+          ...statsForRepo({ path: projectPath }),
         });
       }
     } catch (_) {}
@@ -124,4 +119,9 @@ router.get('/:owner/:repo/vulnerabilities', (req, res) => {
   }
 });
 
-module.exports = { reposRouter: router };
+function invalidateRepoCache() {
+  repoCache = null;
+  cacheTime = 0;
+}
+
+module.exports = { reposRouter: router, invalidateRepoCache };

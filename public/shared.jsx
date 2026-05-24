@@ -129,6 +129,7 @@ function RiskGauge({ value = 72, size = 200 }) {
 // ── Severity donut ─────────────────────────────────────────────
 function SeverityDonut({ data, size = 140 }) {
   const total = data.reduce((s, d) => s + d.v, 0);
+  const denom = total || 1;
   const r = 52, cx = size/2, cy = size/2;
   const c = 2 * Math.PI * r;
   let acc = 0;
@@ -143,7 +144,7 @@ function SeverityDonut({ data, size = 140 }) {
       <g transform={`rotate(-90 ${cx} ${cy})`}>
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--line)" strokeWidth="16" />
         {data.map((d, i) => {
-          const len = (d.v / total) * c;
+          const len = (d.v / denom) * c;
           const seg = (
             <circle key={d.k} cx={cx} cy={cy} r={r} fill="none"
                     stroke={colors[d.k]}
@@ -161,24 +162,6 @@ function SeverityDonut({ data, size = 140 }) {
       <text x={cx} y={cy + 14} textAnchor="middle"
             fontFamily="var(--font-sans)" fontSize="9"
             fill="var(--muted)" letterSpacing="1">FINDINGS</text>
-    </svg>
-  );
-}
-
-// ── Sparkline (small 7-day risk trend per repo card) ───────────
-function Sparkline({ values, w = 60, h = 24, color }) {
-  if (!values || !values.length) return null;
-  const max = Math.max(...values), min = Math.min(...values);
-  const range = Math.max(1, max - min);
-  const step = w / (values.length - 1);
-  const points = values.map((v, i) => {
-    const x = i * step;
-    const y = h - ((v - min) / range) * (h - 2) - 1;
-    return `${x},${y}`;
-  }).join(' ');
-  return (
-    <svg width={w} height={h}>
-      <polyline points={points} fill="none" stroke={color || 'var(--accent)'} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -210,6 +193,15 @@ function SourceBadge({ source }) {
     : <span className="tag"><Icon.Branch size={11} />github</span>;
 }
 
+// Strip the "owner/" prefix from a GitHub full name for compact display.
+// Local paths (already "~/…") are returned unchanged.
+function repoShortName(name) {
+  if (!name) return name;
+  if (name.startsWith('~') || name.startsWith('/')) return name;
+  const slash = name.indexOf('/');
+  return slash === -1 ? name : name.slice(slash + 1);
+}
+
 window.SVUI = {
-  Icon, SevPill, Checkbox, RiskGauge, SeverityDonut, Sparkline, EcoBadge, SourceBadge,
+  Icon, SevPill, Checkbox, RiskGauge, SeverityDonut, EcoBadge, SourceBadge, repoShortName,
 };

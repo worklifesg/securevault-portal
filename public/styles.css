@@ -712,7 +712,7 @@ table.tbl .repo {
 
 .repo-list .row {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto;
   gap: 10px;
   padding: 11px 0;
   border-bottom: 1px solid var(--line-soft);
@@ -1215,3 +1215,21 @@ table.tbl .repo {
 .flex { display: flex; align-items: center; gap: 8px; }
 .spacer { flex: 1; }
 .hr { height: 1px; background: var(--line); border: 0; margin: 14px 0; }
+
+/* ─────── Settings inputs ─────── */
+.sv-input {
+  width: 100%;
+  font: 400 13px/1.4 var(--font-sans);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 9px 11px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.sv-input::placeholder { color: var(--muted-2); }
+.sv-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}

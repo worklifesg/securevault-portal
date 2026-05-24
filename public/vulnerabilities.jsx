@@ -1,11 +1,11 @@
 // Vulnerabilities table + Batch PR modal. Exposes window.SVVulns.
 
-const { Icon: VIcon, SevPill: VSev, Checkbox: VCb, EcoBadge: VEco, SourceBadge: VSrc } = window.SVUI;
+const { Icon: VIcon, SevPill: VSev, Checkbox: VCb, EcoBadge: VEco, SourceBadge: VSrc, repoShortName: vShort } = window.SVUI;
 
 const SEVS = ['all', 'critical', 'high', 'medium', 'low'];
 
 function Vulnerabilities({ findings, onRemediate }) {
-  const [selected, setSelected] = React.useState(new Set(['f1','f2','f3','f5']));
+  const [selected, setSelected] = React.useState(new Set());
   const [sevFilter, setSevFilter] = React.useState('all');
   const [statusFilter, setStatusFilter] = React.useState('open');
   const [expanded, setExpanded] = React.useState(null);
@@ -56,20 +56,10 @@ function Vulnerabilities({ findings, onRemediate }) {
           <button className={statusFilter === 'pr' ? 'on' : ''} onClick={() => setStatusFilter('pr')}>PR open</button>
           <button className={statusFilter === 'all' ? 'on' : ''} onClick={() => setStatusFilter('all')}>All</button>
         </div>
-        <span className="div" />
-        <span className="chip">
-          <VIcon.Filter size={11} />
-          ecosystem: any
-        </span>
-        <span className="chip">
-          repo: all 9
-          <VIcon.X size={11} className="x" />
-        </span>
         <span className="spacer" />
-        <button className="btn btn-ghost btn-sm">
-          <VIcon.Code size={12} />
-          Export CSV
-        </button>
+        <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+          {new Set(findings.map(f => f.repo)).size} repo{new Set(findings.map(f => f.repo)).size === 1 ? '' : 's'} with findings
+        </span>
       </div>
 
       {/* Bulk action bar */}
@@ -84,11 +74,9 @@ function Vulnerabilities({ findings, onRemediate }) {
               : 'no breaking changes'}
           </span>
           <span className="right">
-            <button className="btn">Acknowledge</button>
-            <button className="btn">Won't fix</button>
             <button className="btn btn-accent" onClick={() => onRemediate(selectedFindings)}>
               <VIcon.GitPR size={13} />
-              Remediate selected →
+              View remediation plan →
             </button>
           </span>
         </div>
@@ -100,8 +88,7 @@ function Vulnerabilities({ findings, onRemediate }) {
           <h3>Findings</h3>
           <span className="lede">{list.length} of {findings.length} · sorted by severity then age</span>
           <span className="right">
-            <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>Last scan: 2m ago</span>
-            <button className="btn btn-ghost btn-sm">
+            <button className="btn btn-ghost btn-sm" onClick={() => window.SVDataLoader && window.SVDataLoader.refreshAll()}>
               <VIcon.Refresh size={12} />
               Refresh
             </button>
@@ -125,6 +112,15 @@ function Vulnerabilities({ findings, onRemediate }) {
             </tr>
           </thead>
           <tbody>
+            {list.length === 0 && (
+              <tr>
+                <td colSpan={10} style={{ padding: '26px 14px', textAlign: 'center', fontSize: 12.5, color: 'var(--muted)' }}>
+                  {findings.length === 0
+                    ? 'No findings yet. Scan a repository from Repository Posture to populate this table.'
+                    : 'No findings match the current filters.'}
+                </td>
+              </tr>
+            )}
             {list.map(f => (
               <React.Fragment key={f.id}>
                 <tr className={selected.has(f.id) ? 'row-sel' : ''}>
@@ -146,7 +142,7 @@ function Vulnerabilities({ findings, onRemediate }) {
                       <span className="ver" style={{ color: 'var(--ok)' }}>{f.fixed}</span>
                     </div>
                   </td>
-                  <td className="repo">{f.repo.replace('worklifesg/', '')}</td>
+                  <td className="repo">{vShort(f.repo)}</td>
                   <td><VEco eco={f.eco} /></td>
                   <td><VSrc source={f.source} /></td>
                   <td>
@@ -234,9 +230,9 @@ function ExpandedFinding({ finding }) {
 
         <div style={{ marginTop: 14, display: 'flex', gap: 18, flexWrap: 'wrap' }}>
           <KV label="CWE" value={(finding.cwe || []).join(', ') || '—'} mono />
-          <KV label="CVSS vector" value="AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" mono />
-          <KV label="Exploit maturity" value={finding.severity === 'critical' ? 'PoC public' : 'Functional'} />
-          <KV label="First seen" value={finding.seen} />
+          <KV label="CVSS" value={finding.cvss ? finding.cvss.toFixed(1) : '—'} mono />
+          <KV label="Scanner" value={finding.scanner || '—'} mono />
+          <KV label="Ecosystem" value={finding.eco || '—'} />
         </div>
 
         <div style={{ marginTop: 16, padding: '12px 14px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 8 }}>
@@ -250,25 +246,26 @@ function ExpandedFinding({ finding }) {
             <span style={{ color: 'var(--ok)' }}>{finding.fixed}</span>
           </div>
           <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>
-            Patch release · no breaking changes detected via SBOM diff
+            {finding.fixed && finding.fixed !== 'none' ? `Fix available: ${finding.fixed}` : 'No fixed version published yet'}
           </div>
         </div>
       </div>
 
       <div>
         <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
-          Finding history
+          Detection
         </div>
         <div className="tl" style={{ paddingLeft: 22 }}>
-          <div className="tl-item ok"><div className="when">3 days ago · 14:22</div><div className="what">Detected by OSV-Scanner on daily scan</div></div>
-          <div className="tl-item"><div className="when">2 days ago · 09:11</div><div className="what">Fix version published upstream</div></div>
-          <div className="tl-item warn"><div className="when">Today · 14:28</div><div className="what">Confirmed on push-trigger fast scan</div></div>
+          <div className="tl-item ok">
+            <div className="when">{finding.seen || 'recent'}</div>
+            <div className="what">Detected by {finding.scanner || 'scanner'} on {finding.source === 'local' ? 'local project' : 'repository'} scan</div>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
-          <button className="btn btn-sm"><VIcon.GitPR size={11} />Open PR for this fix</button>
-          <button className="btn btn-sm btn-ghost">View on OSV.dev</button>
-          <button className="btn btn-sm btn-ghost">Acknowledge</button>
+          {finding.cve && finding.cve.startsWith('CVE') && (
+            <a className="btn btn-sm btn-ghost" href={`https://osv.dev/vulnerability/${finding.cve}`} target="_blank" rel="noreferrer">View on OSV.dev</a>
+          )}
         </div>
       </div>
     </div>
@@ -309,10 +306,10 @@ function BatchPRModal({ findings, onClose, onConfirm }) {
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-hd">
           <div>
-            <h2>Batch remediation — {findings.length} finding{findings.length === 1 ? '' : 's'}</h2>
+            <h2>Remediation plan — {findings.length} finding{findings.length === 1 ? '' : 's'}</h2>
             <p className="lede">
-              SecureVault will open <b>{Object.keys(byRepo).length} PR{Object.keys(byRepo).length === 1 ? '' : 's'}</b>
-              {' '}(one per repo), bundling all selected version bumps onto a single branch per repo. PRs require your review before merge.
+              Recommended version bumps across <b>{Object.keys(byRepo).length} repo{Object.keys(byRepo).length === 1 ? '' : 's'}</b>.
+              Review the changes below and apply them in your repository.
             </p>
           </div>
           <button className="modal-x" onClick={onClose}>
@@ -341,13 +338,9 @@ function BatchPRModal({ findings, onClose, onConfirm }) {
             <div className="batch-repo" key={repo}>
               <div className="batch-repo-h">
                 <VIcon.Branch size={13} />
-                <span className="repo">{repo}</span>
-                <span className="tag tag-mono">PR-1</span>
+                <span className="repo">{vShort(repo)}</span>
                 <span className="meta">
-                  {fs.length} package{fs.length === 1 ? '' : 's'} · branch{' '}
-                  <span className="mono" style={{ color: 'var(--ink-2)' }}>
-                    securevault/batch-fix-{Math.floor(Math.random() * 9000 + 1000)}
-                  </span>
+                  {fs.length} package{fs.length === 1 ? '' : 's'} to bump
                 </span>
               </div>
               {fs.map(f => (
@@ -373,13 +366,12 @@ function BatchPRModal({ findings, onClose, onConfirm }) {
             fontSize: 12.5,
           }}>
             <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>
-              Each PR will include
+              How to apply
             </div>
             <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, color: 'var(--ink-2)' }}>
-              <li>CVE list with CVSS scores and links to OSV.dev</li>
-              <li>Pre-merge lockfile snapshot (committed to <span className="mono">.securevault/snapshots/</span> for one-click rollback)</li>
-              <li>Testing checklist tailored to affected packages</li>
-              <li>Label <span className="mono">securevault-remediation</span> for filtering and auditing</li>
+              <li>Update each package to its fixed version in the relevant manifest/lockfile</li>
+              <li>Run your test suite before committing the bumps</li>
+              <li>Re-scan the repo here to confirm the findings clear</li>
             </ul>
           </div>
         </div>
@@ -387,13 +379,13 @@ function BatchPRModal({ findings, onClose, onConfirm }) {
         <div className="modal-foot">
           <span className="lede">
             <VIcon.Lock size={11} style={{ verticalAlign: -2, marginRight: 4 }} />
-            Never auto-merged · always awaits your review
+            SecureVault never writes to your repositories
           </span>
           <span className="right">
             <button className="btn" onClick={onClose}>Cancel</button>
             <button className="btn btn-accent" onClick={onConfirm}>
-              <VIcon.GitPR size={13} />
-              Create {Object.keys(byRepo).length} PR{Object.keys(byRepo).length === 1 ? '' : 's'}
+              <VIcon.Check size={13} />
+              Got it
             </button>
           </span>
         </div>

@@ -7,10 +7,21 @@
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
-  "keywords": ["security", "vulnerability", "scanning"],
+  "keywords": ["security", "vulnerability", "scanning", "sbom", "secrets", "self-hosted", "devsecops"],
   "author": "Shraman Gupta",
   "license": "MIT",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/worklifesg/securevault-portal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/worklifesg/securevault-portal/issues"
+  },
+  "homepage": "https://github.com/worklifesg/securevault-portal#readme",
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
